@@ -8,6 +8,7 @@ the configured failure threshold and recovery timeout, and provides methods to a
 import time
 from enum import Enum
 import redis
+from redis_scripts import OPEN_SCRIPT, FAILURE_SCRIPT, HALF_OPEN_SCRIPT
 
 # CircuitState defines the possible states of the circuit breaker: CLOSED, OPEN, and HALF_OPEN.
 class CircuitState(Enum):
@@ -31,8 +32,13 @@ class RedisCircuitBreaker:
         self.failure_threshold = failure_threshold
         self.recovery_timeout = recovery_timeout
 
+
         # Initialize Redis client and set up keys for state, failure count, and last failure time.
         self.redis = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
+        self.open_script = self.redis.register_script(OPEN_SCRIPT)
+        self.failure_script = self.redis.register_script(FAILURE_SCRIPT)
+        self.half_open_script = self.redis.register_script(HALF_OPEN_SCRIPT)
+
 
         self.state_key = f"cb:{service_name}:state"
         self.failure_key = f"cb:{service_name}:failures"
@@ -49,20 +55,48 @@ class RedisCircuitBreaker:
         return CircuitState(state)
 
     # Determine if a request should be allowed based on the current state of the circuit. If the circuit is OPEN, check if the recovery timeout has elapsed to transition to HALF_OPEN.
+    # In the OPEN state, only one request is allowed to pass through as a probe to test if the service has recovered. If the probe request is successful, the circuit transitions back to CLOSED. If it fails, the circuit remains OPEN.
     def allow_request(self):
         state = self.get_state()
 
         if state == CircuitState.OPEN:
             last_failure = self.redis.get(self.time_key)
-            if last_failure:
-                elapsed = time.time() - float(last_failure)
-                if elapsed >= self.recovery_timeout:
-                    self.redis.set(self.state_key, CircuitState.HALF_OPEN.value)
-                    print("⚠️ HALF_OPEN")
-                    return True
+            if not last_failure:
+                return False
+
+            elapsed = time.time() - float(last_failure)
+
+            if elapsed < self.recovery_timeout:
+                return False
+
+            # STEP 1: Try to acquire probe lock
+            lock_acquired = self.redis.set(
+                f"{self.service_name}:probe_lock",
+                "1",
+                nx=True,
+                ex=5
+            )
+
+            if not lock_acquired:
+                return False  # Someone else is probing
+
+            # STEP 2: Transition to HALF_OPEN safely
+            transitioned = self.half_open_script(
+                keys=[self.state_key],
+                args=[CircuitState.OPEN.value, CircuitState.HALF_OPEN.value],
+            )
+
+            if transitioned:
+                print("⚠️ HALF_OPEN (Probe Leader)")
+                return True
+            else:
+                return False
+
+        if state == CircuitState.HALF_OPEN:
             return False
 
         return True
+
 
     # Record a successful service call. If the circuit is HALF_OPEN, transition back to CLOSED. Otherwise, reset the failure count.
     def record_success(self):
@@ -71,29 +105,37 @@ class RedisCircuitBreaker:
         if state == CircuitState.HALF_OPEN:
             self.redis.set(self.state_key, CircuitState.CLOSED.value)
             self.redis.set(self.failure_key, 0)
-            print("✅ CLOSED")
+            self.redis.delete(f"{self.service_name}:probe_lock")
+            print("✅ CLOSED (Shared)")
         else:
             self.redis.set(self.failure_key, 0)
 
+
     # Record a failed service call. If the circuit is HALF_OPEN, transition to OPEN immediately. If the failure count exceeds the threshold, transition to OPEN.
     def record_failure(self):
-        failures = int(self.redis.get(self.failure_key) or 0)
-        failures += 1
-        self.redis.set(self.failure_key, failures)
+        failures = self.failure_script(
+            keys=[
+                self.failure_key,
+                self.state_key,
+                self.time_key,
+                f"{self.service_name}:probe_lock",
+            ],
+            args=[
+                self.failure_threshold,
+                CircuitState.OPEN.value,
+                time.time(),
+            ],
+        )
 
         print(f"❌ Shared Failure count: {failures}")
 
-        state = self.get_state()
-
-        if state == CircuitState.HALF_OPEN:
-            self._open()
-            return
-
-        if failures >= self.failure_threshold:
-            self._open()
 
     # Transition the circuit to OPEN state, recording the time of the last failure.
     def _open(self):
-        self.redis.set(self.state_key, CircuitState.OPEN.value)
-        self.redis.set(self.time_key, time.time())
-        print("🚨 OPEN (Shared)")
+        self.open_script(
+            keys=[self.state_key, self.time_key, f"{self.service_name}:probe_lock"],
+            args=[CircuitState.OPEN.value, time.time()],
+        )
+        print("🚨 OPEN (Atomic Shared)")
+
+
