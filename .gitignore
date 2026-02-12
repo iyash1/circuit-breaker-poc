@@ -1,0 +1,39 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.env/
+.venv/
+env/
+
+# Environment variables
+.env
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Redis dump files (if running locally)
+dump.rdb
+
+# IDE files
+.vscode/
+.idea/
+
+# Python packaging
+build/
+dist/
+*.egg-info/
+
+# Coverage / testing
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Jupyter
+.ipynb_checkpoints/
