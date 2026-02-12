@@ -1,0 +1,2 @@
+INSTANCE_NAME = "Instance-A"
+PORT = 8001

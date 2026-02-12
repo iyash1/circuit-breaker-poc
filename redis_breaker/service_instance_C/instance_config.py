@@ -1,0 +1,2 @@
+INSTANCE_NAME = "Instance-C"
+PORT = 8003
