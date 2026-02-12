@@ -174,7 +174,7 @@ You will observe:
 
 ---
 
-## 11. What This PoC Does NOT Include (Yet)
+## 11. What This PoC Does NOT Include
 
 * Thread safety
 * Sliding window failure rate

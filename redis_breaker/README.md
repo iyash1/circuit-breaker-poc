@@ -167,7 +167,7 @@ This implementation does NOT prevent multiple nodes from probing simultaneously.
 
 ---
 
-## 7️⃣ Known Limitations (Intentional for Learning)
+## 7️⃣ Known Limitations
 
 This implementation is NOT production-ready.
 
